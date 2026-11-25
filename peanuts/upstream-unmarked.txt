@@ -450,3 +450,10 @@ dm/games/010082400BCC6000/shader_pairs.tsv	Generated vertex and pixel key pairs.
 dm/games/010082400BCC6000/pso_pairs.tsv	Generated supplemental pipeline key pairs.
 dm/games/010082400BCC6000/pso_manifest.tsv	Generated pipeline seed list.
 dm/games/010082400BCC6000/bf_want.tsv	Generated shader auxiliary table.
+dm/games/01002A000CD48000/bf_want.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/pso_manifest.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/pso_pairs.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/shader_facts.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/shader_map.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/shader_map.tsv.conflicts.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
+dm/games/01002A000CD48000/shader_pairs.tsv	Resident Evil 6 profile metadata. Preserve the generated table bytes and shader input stamp.
