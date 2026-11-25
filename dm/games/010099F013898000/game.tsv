@@ -1,0 +1,40 @@
+# World War Z v458752, SDK 10.4.1.
+
+# ---- Identity ----
+title_id	010099F013898000
+program_id	010099F013898000
+
+# ---- App ----
+name	World War Z
+ipa	010099f013898000.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v458752	?	main=05ca2d8bfae05719e8eee7da75d90338	subsdk0=ebedb2645cb8a961714ebc29e9eee0a9	sdk=d9add76fc264863d85fbbd1d70076c76
+package	v458752
+shader_versions	v458752
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	preload/paks/client/shared_video.pak
+zip_store	.nro:.pak:.metallib
+
+# ---- Memory ----
+# the NPDM declares 32 MB of system resource (virtual address memory) and main never sets a heap: the game maps its memory itself in the alias region.
+# nninitStartup asks StandardAllocator for an 8 GB address region, and a static initializer (main+0xca516c) then takes a 2 GB region with
+# nn::os::AllocateAddressRegion and memsets it without checking the result: with a 4.375 GB alias region StandardAllocator got 4.06 GB, the 2 GB region
+# failed and the memset wrote through null. A 64 GB alias region, as Hogwarts Legacy (address space only, nothing committed)
+mem_reserve	0x1028000000
+mem_alias	0x1000000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 32 MB of system resource
+sys_resource	0x2000000
+
+# ---- Shader split ----
+shader_groups	/preload/=preload /common/=common /.nrr/=nrr
+shader_note	010099F013898000 shaders (provisional profile)
+
+# PEANUTS(upstream-candidate): the offline match client and server NRO exchange UDP over loopback.
+net_loopback	1
