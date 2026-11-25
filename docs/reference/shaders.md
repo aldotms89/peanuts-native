@@ -2028,3 +2028,11 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 - **Cause:** the stored extent includes alignment bytes beyond the declared size. A size mismatch can also signal a Viper LZ4 member.
 - **Fix:** accept the declared-size prefix when its CRC matches the directory entry. Otherwise pass the stored bytes to the Viper decoder.
 - **Found on:** World War Z (`010099F013898000`).
+
+<!-- PEANUTS(upstream-candidate) -->
+### Saber Swarm SDC shader caches
+
+- **Symptom:** shader splitting misses NVN shaders packed in Saber Swarm caches.
+- **Cause:** the files index compressed blocks and shader records. Scanning for shader magic in the compressed data misses the records.
+- **Fix:** detect the index and zlib streams from the bytes, bound each record by its index, and read the NVN control and code spans. Probe loose files and nested archive members.
+- **Found on:** World War Z (`010099F013898000`).

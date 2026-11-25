@@ -1511,8 +1511,124 @@ def zip_shaders(path, rel, names, out):
     with open(path, 'rb') as source, zipfile.ZipFile(source) as z:
         for nm in names:
             d = zip_member(z, nm); n = len(out)
+            # PEANUTS begin(upstream-candidate): a rejected SDC must skip the GLSLC fallback.
+            if header := sdc_header(d):
+                member = nm.replace('\\', '/')
+                out.extend(sdc_shaders(d, f'/{rel}/{member}', header))
+                continue
+            # PEANUTS end(upstream-candidate)
             scan_blob(d, f'/{rel}/{nm}', out)
             if len(out) == n and d[:4] != b'MSHD' and b'\x91\x68\x86\x19' in d: out += glslc_shaders(d, f'/{rel}/{nm}', need=False)
+
+# PEANUTS begin(upstream-candidate): Saber Swarm's indexed zlib shader caches.
+def sdc_zlib_header(d, offset):
+    cmf, flg = d[offset:offset + 2]
+    return cmf & 15 == 8 and cmf >> 4 <= 7 and (cmf * 256 + flg) % 31 == 0 and not flg & 0x20
+
+
+def sdc_header(d):
+    """Recognize an untagged cache by its counts and a zlib stream at an indexed boundary."""
+    if len(d) < 44:  # fixed header, one descriptor, one entry, empty zlib stream
+        return None
+    blocks, entries, packed = struct.unpack_from('<3I', d)
+    payload = len(d) - packed
+    minimum = 16 + 8 * blocks + 12 * entries
+    if not (0 < blocks <= entries and minimum <= len(d) - 8):
+        return None
+    if minimum <= payload <= len(d) - 8 and sdc_zlib_header(d, payload):
+        return blocks, entries, payload
+
+    # Two independent index fields can identify a cache even when a total or the first zlib header is damaged.
+    first_size, first_count = struct.unpack_from('<2I', d, 16)
+    if not (0 < first_count <= entries and 8 <= first_size <= len(d) - minimum):
+        return None
+    if sdc_zlib_header(d, minimum) or (minimum == payload and (
+            (blocks, first_count, first_size) == (1, entries, packed)
+            or (first_size + 8 <= packed and sdc_zlib_header(d, payload + first_size)))):
+        return blocks, entries, payload
+    return None
+
+
+def sdc_block(d, start, sizes, label):
+    """Inflate exactly one stream and extract NVN records at their indexed boundaries."""
+    size = sum(sizes)
+    if size > 1032 * len(d):  # at most 258 bytes per two bits in DEFLATE
+        raise ValueError('indexed size exceeds the DEFLATE expansion limit')
+    decoder = zlib.decompressobj()
+    raw = decoder.decompress(d, size + 1)
+    if len(raw) != size or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+        raise ValueError('zlib stream does not match its compressed and inflated sizes')
+
+    records = []
+    offset = 0
+    for length in sizes:
+        at = offset
+        offset += length
+        # Other indexed entries hold metadata such as source names and defines.
+        has_offset = length >= 8 and raw[at:at + 8] == b'\x20\0\0\0\0\0\0\0'
+        has_control = length >= 36 and raw[at + 32:at + 36] == CTL_MAGIC
+        if not (has_offset or has_control):
+            continue
+        where = f'{label}#SDC@{start:#x}:{at:#x}'
+        if length < 32 + 0x760:
+            raise ValueError(f'{where}: short NVN record')
+        co, padded_ctl, kn, ko = struct.unpack_from('<4Q', raw, at)
+        if co != 32 or ko != co + padded_ctl or ko + kn != length or not kn:
+            raise ValueError(f'{where}: NVN offsets and sizes do not match the indexed span')
+        cn = struct.unpack_from('<I', raw, at + co + 0x20)[0]
+        if not 0x760 <= cn <= padded_ctl:
+            raise ValueError(f'{where}: invalid NVN control length')
+        ctl = raw[at + co:at + co + cn]
+        code = raw[at + ko:offset]
+        if not (st := glslc_stage(ctl, code)):
+            raise ValueError(f'{where}: unknown NVN shader stage')
+        if why := check(where, st, ctl, code):
+            raise ValueError(f'{where}: {why}')
+        if st == 'cs' and not all(struct.unpack_from('<3I', ctl, 0x748)):
+            raise ValueError(f'{where}: compute thread-group dimensions must be nonzero')
+        if st != 'cs' and len(code) < 0x80:
+            raise ValueError(f'{where}: short graphics code area')
+        records.append((where, st, ctl, code))
+    return records
+
+
+def sdc_shaders(d, label, header):
+    """After the four-word header, each block descriptor gives its compressed size and entry count.
+    Each entry is a hash, an inflated size, and a byte count followed by that many metadata bytes.
+    The streams follow the last index entry in block order.
+    """
+    blocks, remaining, payload = header
+    index, stream = 16, payload
+    records = []
+    for block in range(blocks):
+        try:
+            if index + 8 > payload:
+                raise ValueError('truncated block descriptor')
+            packed, count = struct.unpack_from('<2I', d, index)
+            index += 8
+            if not (0 < count <= min(remaining, (payload - index) // 12) and 8 <= packed <= len(d) - stream):
+                raise ValueError('invalid block size or entry count')
+            remaining -= count
+            sizes = []
+            for _ in range(count):
+                if index + 12 > payload:
+                    raise ValueError('truncated index entry')
+                _, size, metadata = struct.unpack_from('<3I', d, index)
+                index += 12 + metadata
+                if index > payload:
+                    raise ValueError('index metadata crosses into the compressed payload')
+                sizes.append(size)
+            records.extend(sdc_block(d[stream:stream + packed], stream, sizes, label))
+            stream += packed
+        except (ValueError, zlib.error) as e:
+            print(f'[RED] {label}: SDC block {block}: {e} (cache skipped)', flush=True)
+            return []
+    if index != payload or stream != len(d) or remaining:
+        print(f'[RED] {label}: SDC index and stream totals do not match the header (cache skipped)', flush=True)
+        return []
+    return records
+# PEANUTS end(upstream-candidate)
+
 
 def pgdat_members(d, label):
     """A PlatinumGames DAT archive: 'DAT\\0', u32 file count, then the offsets of five tables: file offsets (u32 each), extensions (4 bytes each), names (u32 name length, then one name of that
@@ -3374,6 +3490,7 @@ NEST = 16   # archives in archives scan_blob opens (SARC, PlatinumGames' DAT): r
             # that expands 9 times, which then added up to 18 times the file)
 def scan_blob(d, label, out, depth=0, left=None):
     if depth > NEST: red(f'{label}: archives nested more than {NEST} deep')
+    if header := sdc_header(d): out.extend(sdc_shaders(d, label, header)); return   # PEANUTS(upstream-candidate): nested Saber shader cache.
     if d[:8] == b'NNDXDHSC': out.append(nndx_shader(d, label)); return   # PEANUTS(upstream-candidate): a Level-5 single-stage object
     if d[:4] == b'SHN!': out.extend(shn_shaders(d, label)); return
     if d[:8] == SUMO_MUX:
@@ -3450,8 +3567,8 @@ def pixel_input_cover(shaders):
         k = min(ins, key=lambda k: (-len(ins[k] & left), k)); cover.append(k); left -= ins[k]
     return cover
 
-# PEANUTS: Diablo III records contain one stage each.
-SINGLE_STAGE = ('#GLSLC@', '#VIPER', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#NNDX', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@', '#PHYRE@', '#SUMO@', '#NVNSH@', '#D3@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+# PEANUTS(upstream-candidate): Diablo III and Saber cache records contain one stage each.
+SINGLE_STAGE = ('#GLSLC@', '#VIPER', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#NNDX', '#RAW@', '#TFXO@', '#NEEDLE@', '#SNOWDROP@', '#PHYRE@', '#SUMO@', '#NVNSH@', '#D3@', '#SDC@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # Unreal Engine 3's shader caches (ue3_shaders, '#UE3@'); MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs; YEBIS's effect file (tfxo_shaders); and Sumo's Ninty_NX descriptors and NVNsh records, one stage
@@ -3940,6 +4057,9 @@ def scan_whole(path, rel, head, found, trees):   # scan_file_in for a file no ar
         return rel, uniq_keys(found), var_pairs(found), trees
     if kind == 'phyre':
         found += phyre_shaders(d, '/' + rel)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if header := sdc_header(d):   # PEANUTS(upstream-candidate): probe loose Saber caches before the shader-magic prefilter.
+        found.extend(sdc_shaders(d, '/' + rel, header))
         return rel, uniq_keys(found), var_pairs(found), trees
     if d[:3] == b'XNB' and d[4] == 5 and d[5] & 0xC0 and len(d) > 14:   # a compressed XNB (Stardew Valley: 3,535 LZ4 files, 8 LZX): only effects (EffectReader) carry MGFX shaders, and for LZX the reader names sit in the first block, so it decides whether the rest is worth decoding
         if d[5] & 0x80:
@@ -4725,6 +4845,7 @@ def split_tables(results, big, files, dumps, J, common, zdicts, cache, targeted=
     kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#PMAP@' not in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#GLSLC@' not in r[4] and '#SNVN@' not in r[4] for r in rows)),
                                         ('Retro Studios SNVN', any('#SNVN@' in r[4] for r in rows)),
                                         ('phx PMAP', any('#PMAP@' in r[4] for r in rows)), ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
+                                        ('Saber SDC', any('#SDC@' in r[4] for r in rows)),  # PEANUTS(upstream-candidate)
                                         ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                         ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)),
                                         ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)),

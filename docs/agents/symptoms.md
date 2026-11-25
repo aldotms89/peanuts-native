@@ -1060,6 +1060,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 - ground or other surfaces that pick their texture by a value the shader computes draw flat, in one placeholder colour or in tile-shaped blocks. No `[RED]` line names it, or only `has no view of shape` lines of a placeholder texture. → [Textures picked from the records of a table all read as one texture](../reference/shaders.md#textures-picked-from-the-records-of-a-table-all-read-as-one-texture)
 - dashed or blocky edges, two pixels wide, along the line where a surface changes from one texture of an array to another (the border between two ground types). → [A texture array indexed per pixel draws broken edges where the index changes](../reference/shaders.md#a-texture-array-indexed-per-pixel-draws-broken-edges-where-the-index-changes)
 - a stored ZIP member fails to open during shader splitting because the member's sizes differ. → [Stored ZIP shader members with trailing alignment padding](../reference/shaders.md#stored-zip-shader-members-with-trailing-alignment-padding)
+- shader splitting misses NVN shaders packed in Saber Swarm caches. → [Saber Swarm SDC shader caches](../reference/shaders.md#saber-swarm-sdc-shader-caches)
 
 ## Game state
 
