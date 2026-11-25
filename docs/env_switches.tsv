@@ -168,6 +168,7 @@ DM_MOVIE_RGBA_NEON	diagnostic	`0` keeps `md_rgba`'s scalar loop (`hle_movie.c`; 
 DM_MOVIE_SKIP	diagnostic	Off by default (every movie plays). `all` ends every video stream after 4 packets, `1` those of the session's second decoder and later; the stream ends once and later packets are dropped until Stop / Flush. Not the console's behaviour: a player that checks its pictures can abort (`hle_codec_video.c`)
 DM_MOVIE_TRACE	diagnostic	When set, the movie decoder logs every call with its thread and decoder (by default the first 12 calls, then every 2^k-th)
 DM_MSL_DIR	path	Parent folder of the shader libraries: NVN loads from `b-<chain version>/` beneath it, Vulkan from `vk/`, GL from `gl/`; the app and the Mac launcher set it
+DM_NET_LOOPBACK	switch	`0` or `1` at startup overrides the game profile’s `net_loopback` setting. Serves IPv4 UDP and TCP on loopback only. [PEANUTS(upstream-candidate)]
 DM_NICK	switch	The account nickname the game sees (default `Player`) when `DM_USERS` is not set
 DM_NRO	switch	`0` turns off loading of the NRO modules the game's NRR files register (on by default): every `nn::ro::LoadModule` then fails
 DM_NRO_COLLECT_J	switch	`1` makes `dm/tools/nro_collect.py` scan in its own process, without a pool (`pack_android.py --in-process`: the phone's packer must not fork)

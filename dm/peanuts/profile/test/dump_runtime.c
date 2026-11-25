@@ -46,6 +46,7 @@ int main(int argc, char **argv) {
     printf("pad_layout=%d\n", (int)p->pad_layout);
     printf("opmode=%d\n", (int)p->opmode);
     printf("perf_boost=%d\n", (int)p->perf_boost);
+    printf("net_loopback=%d\n", (int)p->net_loopback);
     printf("tex_flush_upload=%d\n", (int)p->tex_flush_upload);
     printf("shader_key_skip_off=%llu\n", (unsigned long long)p->shader_key_skip_off);
     printf("shader_key_skip_len=%llu\n", (unsigned long long)p->shader_key_skip_len);

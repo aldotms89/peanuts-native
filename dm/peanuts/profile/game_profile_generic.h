@@ -57,6 +57,7 @@
 #define DM_GAME_PAD_LAYOUT (g_profile.pad_layout)
 #define DM_GAME_OPMODE (g_profile.opmode)
 #define DM_GAME_PERF_BOOST (g_profile.perf_boost)
+#define DM_GAME_NET_LOOPBACK (g_profile.net_loopback)
 #define DM_GAME_TEX_FLUSH_UPLOAD (g_profile.tex_flush_upload)
 #define DM_GAME_SHADER_KEY_SKIP_OFF (g_profile.shader_key_skip_off)
 #define DM_GAME_SHADER_KEY_SKIP_LEN (g_profile.shader_key_skip_len)

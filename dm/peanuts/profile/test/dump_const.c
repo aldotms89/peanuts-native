@@ -47,6 +47,7 @@ int main(void) {
     printf("pad_layout=%d\n", (int)DM_GAME_PAD_LAYOUT);
     printf("opmode=%d\n", (int)DM_GAME_OPMODE);
     printf("perf_boost=%d\n", (int)DM_GAME_PERF_BOOST);
+    printf("net_loopback=%d\n", (int)DM_GAME_NET_LOOPBACK);
     printf("tex_flush_upload=%d\n", (int)DM_GAME_TEX_FLUSH_UPLOAD);
     printf("shader_key_skip_off=%llu\n", (unsigned long long)DM_GAME_SHADER_KEY_SKIP_OFF);
     printf("shader_key_skip_len=%llu\n", (unsigned long long)DM_GAME_SHADER_KEY_SKIP_LEN);

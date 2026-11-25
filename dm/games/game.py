@@ -188,6 +188,9 @@ def header(g):
     sko, skl = (int(m[1], 0), int(m[2], 0)) if m else (0, 0)
     rcd = g.get('render_cond', 'off')   # NVN conditional rendering evaluated at replay, timestamp reports with counter 0 (nvn_mtl.m OP_RENDER_COND): on / off
     if rcd not in ('on', 'off'): sys.exit(f'{g.id}: render_cond must be on or off: {rcd}')
+    # PEANUTS(upstream-candidate): offline titles can opt in to local BSD sockets.
+    net_loopback = g.get('net_loopback', '0')
+    if net_loopback not in ('0', '1'): sys.exit(f'{g.id}: net_loopback must be 0 or 1: {net_loopback}')
     tfu = g.get('tex_flush_upload', 'off')   # textures written by the CPU into a pool and published with nvnMemoryPoolFlushMappedRange are uploaded like packaged ones (hle_nvn.c): on / off
     if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload must be on or off: {tfu}')
     tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
@@ -437,6 +440,7 @@ def header(g):
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
          f'#define DM_GAME_OPMODE {int(om == "console")}',
          f'#define DM_GAME_PERF_BOOST {int(pm == "boost")}',
+         f'#define DM_GAME_NET_LOOPBACK {net_loopback}',  # PEANUTS(upstream-candidate)
          f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
          f'#define DM_GAME_SHADER_KEY_SKIP_OFF {sko:#x}', f'#define DM_GAME_SHADER_KEY_SKIP_LEN {skl:#x}',
          f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',

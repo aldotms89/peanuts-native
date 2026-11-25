@@ -1131,3 +1131,11 @@ Most service calls can be found before they crash, before the first boot or the 
 - **Cause:** `PlayReport::Send` returns a nontrivial `AsyncContext` in the caller's x8 storage that expects an initialized state and connects to `prepo:u` if unhandled.
 - **Fix:** in `dm/host/hle_offline.c`, `h_prepo_SendU` invokes the guest's `nn::prepo::AsyncContext::AsyncContext(Result)` constructor with `RES_OK` via x8, completing the asynchronous telemetry report offline without requiring a service session.
 - **Found on:** [The Legend of Zelda: Ocarina of Time](../../dm/games/0400486024DEC000/README.md).
+
+<!-- PEANUTS(upstream-candidate) -->
+### Offline games with a local BSD socket server
+
+- **Symptom:** an offline server cannot create local BSD sockets under the default offline hooks, or stops before binding when it resolves a wildcard IPv4 listen address.
+- **Cause:** the host's default BSD socket hooks answer `ENETDOWN` for socket creation even when the game only needs local UDP or TCP. The initial loopback resolver also applied its destination filter to numeric address lookups, rejecting `0.0.0.0` before the server could bind.
+- **Fix:** `net_loopback 1` enables IPv4 UDP and TCP on guest descriptors 576–639. The host binds every endpoint to `127.0.0.1`, rejects destinations outside `127.0.0.0/8`, and resolves `localhost` and dotted-quad IPv4 literals (including `0.0.0.0`) locally without DNS. Other names fail. The C and C++ hooks translate the BSD ABI, poll sockets alongside eventfds, and use cooperative waits over nonblocking host descriptors. NIFM continues to report offline. The first TCP bind, UDP bind, and refused destination each log once.
+- **Found on:** World War Z (`010099F013898000`) uses a wildcard IPv4 address and a port range for its offline listener.

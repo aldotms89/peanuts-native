@@ -657,13 +657,21 @@ $(B)/t_android_spvpatch: t_android_spvpatch.c $(VKA)/vka_spvpatch.c $(VKA)/vka_s
 COOP_DIR ?= ../../third_party/pokopia-coop
 COOP_TEST_SRC = $(addprefix $(COOP_DIR)/coop_,ldn.c vnet.c mpnet.c plat.c auth.c disc.c)
 COOP_TEST_LIBS = $(if $(filter Darwin,$(shell uname -s)),-ldns_sd,)
-$(B)/t_net_eventfd: t_net_eventfd.c ../hle_net.c ../hle_coop.h ../hle.h ../dm.h $(GAME_H) | $(B)
-	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_net_eventfd.c
-$(B)/t_net_coop: t_net_coop.c ../hle_net.c ../hle_offline.c ../hle_coop.c ../hle_coop.h ../hle.h ../dm.h $(GAME_H) $(COOP_TEST_SRC) | $(B)
-	$(CLANG) -O1 -g -Wall -Wno-unused-function -DNX_COOP_VENDOR=1 -I.. $(GINC) -I$(COOP_DIR) -o $@ t_net_coop.c $(COOP_TEST_SRC) $(COOP_TEST_LIBS)
-.PHONY: net-eventfd net-coop
+# PEANUTS(upstream-candidate): socket seam tests include the implementation through hle_net.c.
+NET_TEST_FLAGS = $(if $(filter Linux,$(shell uname -s)),$(PN_ASIF),)
+NET_LOOPBACK_SRC = ../../peanuts/host/net_loopback.inc ../../peanuts/host/net_loopback.h
+$(B)/t_net_eventfd: t_net_eventfd.c ../hle_net.c $(NET_LOOPBACK_SRC) ../hle_coop.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function $(NET_TEST_FLAGS) -I.. $(GINC) -o $@ t_net_eventfd.c
+$(B)/t_net_coop: t_net_coop.c ../hle_net.c $(NET_LOOPBACK_SRC) ../hle_offline.c ../hle_coop.c ../hle_coop.h ../hle.h ../dm.h $(GAME_H) $(COOP_TEST_SRC) | $(B)
+	$(CLANG) -O1 -g -Wall -Wno-unused-function -DNX_COOP_VENDOR=1 $(NET_TEST_FLAGS) -I.. $(GINC) -I$(COOP_DIR) -o $@ t_net_coop.c $(COOP_TEST_SRC) $(COOP_TEST_LIBS)
+$(B)/t_net_loopback: t_net_loopback.c ../hle_net.c ../hle_offline.c $(NET_LOOPBACK_SRC) ../hle_coop.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function $(NET_TEST_FLAGS) -I.. $(GINC) -o $@ t_net_loopback.c -pthread
+.PHONY: net-eventfd net-coop net-loopback
+net-loopback: $(B)/t_net_loopback
+	$(B)/t_net_loopback
 net-eventfd: $(B)/t_net_eventfd
-	$(B)/t_net_eventfd
+	DM_NET_LOOPBACK=0 $(B)/t_net_eventfd
+net-coop: export DM_NET_LOOPBACK=0
 net-coop: $(B)/t_net_coop
 	$(B)/t_net_coop unset
 	$(B)/t_net_coop off
@@ -674,7 +682,7 @@ net-coop: $(B)/t_net_coop
 	$(B)/t_net_coop select-race
 
 # The default run covers the seam that needs no module; the module's own targets only where its directory exists
-run: net-eventfd
+run: net-eventfd net-loopback # PEANUTS(upstream-candidate)
 ifneq ($(wildcard $(COOP_DIR)/coop.h),)
 run: net-coop
 endif

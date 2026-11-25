@@ -296,7 +296,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
 
   </details>
 
-  - host [loader.c:321](../../dm/host/loader.c#L321): build check
+  - host [loader.c:326](../../dm/host/loader.c#L326): build check
 
 ### Batman: Arkham Knight
 
@@ -1003,7 +1003,7 @@ Every patch bound tighter than it could be: the open gaps, then the blocked, kep
   - frame step `+0x3e5638`: scvtf moved into the stub at the load
   - frame step `+0xbe14a8`: swapchain argument 1 when on (FPSLocker)
   - render scale stub (the launcher offers DM_RENDER_SCALE)
-  - host [loader.c:322](../../dm/host/loader.c#L322): build check
+  - host [loader.c:327](../../dm/host/loader.c#L327): build check
 
 ### Xenoblade Chronicles 3
 

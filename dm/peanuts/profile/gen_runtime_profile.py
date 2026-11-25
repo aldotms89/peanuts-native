@@ -35,6 +35,7 @@ SCALAR = {
     'FPS_HOLD': ('fps_hold', 'int'), 'FPS_LIMIT': ('fps_limit', 'int'), 'UE_TEXTURE_POOL': ('ue_texture_pool', 'int'),
     'UE_FPS_CVAR': ('ue_fps_cvar', 'str'), 'PRESENT_SNAP': ('present_snap', 'int'), 'PSO_MTL4': ('pso_mtl4', 'int'),
     'ENC_THREAD': ('enc_thread', 'int'), 'PAD_LAYOUT': ('pad_layout', 'int'), 'OPMODE': ('opmode', 'int'), 'PERF_BOOST': ('perf_boost', 'int'),
+    'NET_LOOPBACK': ('net_loopback', 'int'),
     'TEX_FLUSH_UPLOAD': ('tex_flush_upload', 'int'), 'SHADER_KEY_SKIP_OFF': ('shader_key_skip_off', 'int'),
     'SHADER_KEY_SKIP_LEN': ('shader_key_skip_len', 'int'), 'RENDER_COND': ('render_cond', 'int'), 'TEX_DIRTY_UPLOAD': ('tex_dirty_upload', 'int'),
     'TEX_DYN_SLOTS': ('tex_dyn_slots', 'int'), 'TEX_SOFT': ('tex_soft', 'int'), 'GPU_TS_SEGMENT': ('gpu_ts_segment', 'int'),
@@ -67,7 +68,7 @@ LAYOUT = [
     ('args', 'char[256]'), ('env', 'char[256]'), ('fastboot_env', 'char[256]'), ('devtools', 'char[256]'), ('romfs_subst', 'char[512]'),
     ('mem_map_limit', 'u32'), ('present_display', 'u32'), ('core_preempt', 'u32'), ('alloc_big_align', 'u32'), ('fps_target', 'u32'), ('fps_hold', 'u32'), ('fps_limit', 'u32'),
     ('ue_texture_pool', 'u32'), ('ue_fps_cvar', 'char[32]'), ('present_snap', 'u32'), ('pso_mtl4', 'u32'), ('enc_thread', 'u32'),
-    ('pad_layout', 'u32'), ('opmode', 'u32'), ('perf_boost', 'u32'), ('tex_flush_upload', 'u32'), ('shader_key_skip_off', 'u64'), ('shader_key_skip_len', 'u64'),
+    ('pad_layout', 'u32'), ('opmode', 'u32'), ('perf_boost', 'u32'), ('tex_flush_upload', 'u32'), ('net_loopback', 'u32'), ('shader_key_skip_off', 'u64'), ('shader_key_skip_len', 'u64'),
     ('render_cond', 'u32'), ('tex_dirty_upload', 'u32'), ('tex_dyn_slots', 'u32'), ('tex_soft', 'u32'), ('gpu_ts_segment', 'u32'), ('draw_barriers_game', 'u32'),
     ('vconv_range', 'u32'), ('av1_dav1d', 'u32'), ('has_shared_font_ttf', 'u32'), ('shared_font_ttf', 'u32'), ('has_nvn_api', 'u32'), ('nvn_api_major', 'u32'), ('nvn_api_minor', 'u32'),
     ('nmod', 'u32'), ('modules', f"char[{8}][32]"), ('ndisplay_versions', 'u32'), ('display_versions', 'row[16]:char[48]+char[16]'),
@@ -380,7 +381,7 @@ def build_profile_bytes(g, modules_override=None):
     p.u32(as_int(val('MEM_MAP_LIMIT')))
     for n in ('PRESENT_DISPLAY', 'CORE_PREEMPT', 'ALLOC_BIG_ALIGN', 'FPS_TARGET', 'FPS_HOLD', 'FPS_LIMIT'): p.u32(as_int(val(n)))
     p.u32(as_int(val('UE_TEXTURE_POOL'))); p.raw(unq(val('UE_FPS_CVAR')), 32)
-    for n in ('PRESENT_SNAP', 'PSO_MTL4', 'ENC_THREAD', 'PAD_LAYOUT', 'OPMODE', 'PERF_BOOST', 'TEX_FLUSH_UPLOAD'): p.u32(as_int(val(n)))
+    for n in ('PRESENT_SNAP', 'PSO_MTL4', 'ENC_THREAD', 'PAD_LAYOUT', 'OPMODE', 'PERF_BOOST', 'TEX_FLUSH_UPLOAD', 'NET_LOOPBACK'): p.u32(as_int(val(n)))
     p.u64(as_int(val('SHADER_KEY_SKIP_OFF'))); p.u64(as_int(val('SHADER_KEY_SKIP_LEN')))
     for n in ('RENDER_COND', 'TEX_DIRTY_UPLOAD', 'TEX_DYN_SLOTS', 'TEX_SOFT', 'GPU_TS_SEGMENT', 'DRAW_BARRIERS_GAME', 'VCONV_RANGE', 'AV1_DAV1D'): p.u32(as_int(val(n)))
 

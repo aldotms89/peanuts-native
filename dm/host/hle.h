@@ -43,11 +43,14 @@ void guest_clock_read_wait(void);     // A guest read of the system counter: wai
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
 // Every entry must state the reason for the takeover; an entry in the table that no module references makes loading report a failure and abort (a wrong list must fail loudly).
-typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
-#define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
+// PEANUTS(upstream-candidate): conditional hooks leave SDK resolution alone when disabled.
+typedef struct { const char *name; void *fn; const char *why; int (*enabled)(void); } hle_force_ent;
+#define HLE_FORCE_IF(mangled, why, enabled, ret, cname, ...)                                       \
     static ret cname(__VA_ARGS__);                                                                \
-    PLAT_TABLE(swforce) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    PLAT_TABLE(swforce) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why, enabled}; \
     static ret cname(__VA_ARGS__)
+#define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
+    HLE_FORCE_IF(mangled, why, NULL, ret, cname, __VA_ARGS__)
 // Same as above, but the implementation runs on this thread's big host stack (hle_bigstack.c): what is registered is a stub generated at compile time (the implementation's address goes into x16, then a jump to dm_bigstack_enter).
 // For take-overs with large stack use (the file system sizes its buffers by PATH_MAX): a game thread's stack can be as small as 8 KB. Only register arguments are carried over (<= 8 integer, <= 8 floating point); not for variadic functions
 #define HLE_FORCE_BIG(mangled, why, ret, cname, ...)                                               \
@@ -55,7 +58,7 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
     extern const char cname##_bs[];                                                               \
     __asm__(".text\n.p2align 2\n.globl " PLAT_ASM_SYM(cname##_bs) "\n" PLAT_ASM_HIDDEN " " PLAT_ASM_SYM(cname##_bs) "\n" PLAT_ASM_SYM(cname##_bs) ":\n" \
             "    adrp x16, " PLAT_ASM_PAGE(cname) "\n    add x16, x16, " PLAT_ASM_PAGEOFF(cname) "\n    b " PLAT_ASM_SYM(dm_bigstack_enter) "\n"); \
-    PLAT_TABLE(swforce) static const hle_force_ent hle_force_##cname = {mangled, (void *)(uintptr_t)cname##_bs, why}; \
+    PLAT_TABLE(swforce) static const hle_force_ent hle_force_##cname = {mangled, (void *)(uintptr_t)cname##_bs, why, NULL}; \
     static ret cname(__VA_ARGS__)
 // The game's call site inside a HLE_FORCE_BIG implementation: pass __builtin_return_address(0), which after a stack switch is the entry's own (hle_bigstack.c)
 void *dm_bigstack_caller(void *ra);

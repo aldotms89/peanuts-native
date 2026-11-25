@@ -1,4 +1,4 @@
-// Networking (out of scope: online play/friends/store/cloud saves): all hooked up as "network unavailable", the game takes the offline branch.
+// Networking: nifm reports unavailable. The BSD hooks also serve local descriptors when configured. // PEANUTS(upstream-candidate)
 // Cuts: nifm reports no network; socket only hooks up Initialize (returns success, creates no session), the rest of socket/ssl/friends are hooked up as failures when they come into use.
 #include "hle.h"
 #include "hle_coop.h"
@@ -43,7 +43,7 @@ static __thread int t_skerr = SK_ENETDOWN;
 static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
 void dm_sk_seterr(int e) { t_skerr = e; }
 int dm_sk_geterr(void) { return t_skerr; }   // hle_coop.c: the co-op module's BSD errno
-#define SKF(m, cname, ...) HLE_FORCE(m, "bsd socket service (cut): returns -1/ENETDOWN", int, cname, __VA_ARGS__)
+#define SKF(m, cname, ...) HLE_FORCE(m, "BSD socket service: offline or local descriptors", int, cname, __VA_ARGS__)
 // Poll / Select with nothing to wait on: the host creates no socket, so a game's descriptors are all -1, or it passes none. POSIX and Horizon's bsd service ignore negative
 // descriptors and wait out the timeout, returning 0. Failing at once made Dark Souls Remastered's network thread ("NexusRevolution Socket", main+0x92c7c4) spin a core at 100%
 // on Poll(fds, 0, 33 ms), 11,000 calls a second. An endless wait on nothing never returns on hardware; here it returns 0 after 100 ms: a thread in a host hook pauses for a garbage
@@ -128,8 +128,12 @@ static int efd_ready(int i, int ev) {   // the poll events an eventfd has now. C
 // DM_COOP: a poll that has one of the co-op module's virtual sockets in it (descriptors COOP_FD_BASE.. made by coop_vnet_socket) waits in short slices over both kinds: the module's queues for
 // the virtual ones (coop_vnet_poll with no wait), the eventfd table for the others. A wait of -1 is the usual 100 ms idle, as sk_idle. The list is passed to the module 64 descriptors at
 // a time, so one of any length gets every revents written
-static int coop_mixed_poll(coop_node *cn, sk_pollfd *p, uint64_t n, int ms) {
+#include "../peanuts/host/net_loopback.inc" // PEANUTS(upstream-candidate)
+
+static int sk_mixed_poll(coop_node *cn, sk_pollfd *p, uint64_t n, int ms, int local, int selecting) {
+    // PEANUTS(upstream-candidate): multiplex host sockets with virtual sockets and eventfds.
     int64_t left = ms < 0 ? 100 : ms;
+    int64_t deadline = local && ms >= 0 ? lo_now() + (int64_t)ms * 1000000 : 0;
     for (;;) {
         int ready = 0;
         for (uint64_t base = 0; base < n;) {
@@ -137,12 +141,12 @@ static int coop_mixed_poll(coop_node *cn, sk_pollfd *p, uint64_t n, int ms) {
             uint64_t count = n - base < 64 ? n - base : 64;
             for (uint64_t i = 0; i < count; i++) {
                 uint64_t at = base + i;
-                int virt = p[at].fd >= COOP_FD_BASE && coop_vnet_is(cn, p[at].fd);
+                int virt = cn && p[at].fd >= COOP_FD_BASE && coop_vnet_is(cn, p[at].fd);
                 v[i].fd = virt ? p[at].fd : -1;
                 v[i].events = p[at].events;
                 v[i].revents = 0;
             }
-            int poll_result = coop_vnet_poll(cn, v, count, 0);
+            int poll_result = cn ? coop_vnet_poll(cn, v, count, 0) : 0;
             if (poll_result < 0) return dm_coop_ret(poll_result);
             pthread_mutex_lock(&g_efd_mu);
             for (uint64_t i = 0; i < count; i++) {
@@ -150,12 +154,18 @@ static int coop_mixed_poll(coop_node *cn, sk_pollfd *p, uint64_t n, int ms) {
                 if (v[i].fd >= 0) p[at].revents = v[i].revents;
                 else {
                     int k = p[at].fd >= 0 ? efd_slot(p[at].fd) : -1;
-                    p[at].revents = (int16_t)(k >= 0 ? efd_ready(k, p[at].events) : 0);
+                    p[at].revents = (int16_t)(k >= 0 ? efd_ready(k, p[at].events) : local ? lo_ready(p[at].fd, p[at].events, selecting) : 0);
                 }
                 ready += p[at].revents != 0;
             }
             pthread_mutex_unlock(&g_efd_mu);
             base += count;
+        }
+        if (local) {
+            int64_t ns = deadline ? deadline - lo_now() : 2000000;
+            if (ready || ns <= 0) return ready;
+            dm_guest_sleep_ns(ns < 2000000 ? ns : 2000000);
+            continue;
         }
         if (ready || left <= 0) return ready;
         dm_guest_sleep_ns(2000000);
@@ -163,7 +173,8 @@ static int coop_mixed_poll(coop_node *cn, sk_pollfd *p, uint64_t n, int ms) {
     }
 }
 int dm_sk_poll(void *fds, uint64_t n, int ms) {   // also hle_offline.c's plain pollfd form
-    { coop_node *cn = dm_coop_node(); if (cn) { sk_pollfd *q = fds; for (uint64_t i = 0; i < n; i++) if (q[i].fd >= COOP_FD_BASE && coop_vnet_is(cn, q[i].fd)) return coop_mixed_poll(cn, q, n, ms); } }
+    if (dm_lo_enabled()) return sk_mixed_poll(dm_coop_node(), fds, n, ms, 1, 0); // PEANUTS(upstream-candidate)
+    { coop_node *cn = dm_coop_node(); if (cn) { sk_pollfd *q = fds; for (uint64_t i = 0; i < n; i++) if (q[i].fd >= COOP_FD_BASE && coop_vnet_is(cn, q[i].fd)) return sk_mixed_poll(cn, q, n, ms, 0, 0); } }
     sk_pollfd *p = fds; int any = 0;
     pthread_mutex_lock(&g_efd_mu);
     for (uint64_t i = 0; i < n; i++) if (p[i].fd >= 0) {
@@ -183,22 +194,33 @@ int dm_sk_poll(void *fds, uint64_t n, int ms) {   // also hle_offline.c's plain 
 }
 int dm_sk_select(int nfds, const uint64_t *r, const uint64_t *w, const uint64_t *e, const int64_t *tv) {   // fd_set: 1024 bits; timeval: {i64 seconds, i64 microseconds}
     uint64_t *sets[3] = {(uint64_t *)r, (uint64_t *)w, (uint64_t *)e}, want[3][16] = {{0}}; int any = 0;
+    int local = dm_lo_enabled(); // PEANUTS(upstream-candidate)
+    if (local && (nfds < 0 || nfds > 1024 || (tv && (tv[0] < 0 || tv[1] < 0 || tv[1] >= 1000000))))
+        return lo_error(SK_EINVAL);
     if (nfds > 1024) nfds = 1024;
     coop_node *cn = dm_coop_node();   // made (once) before the eventfd lock is taken
     pthread_mutex_lock(&g_efd_mu);
     for (int k = 0; k < 3; k++) for (int fd = 0; sets[k] && fd < nfds; fd++) if (sets[k][fd >> 6] >> (fd & 63) & 1) {
-        if (efd_slot(fd) < 0 && !(cn && fd >= COOP_FD_BASE && coop_vnet_is(cn, fd))) { pthread_mutex_unlock(&g_efd_mu); return sk_fail(); }
+        if (efd_slot(fd) < 0 && !(cn && fd >= COOP_FD_BASE && coop_vnet_is(cn, fd)) && !(local && lo_exists(fd))) {
+            pthread_mutex_unlock(&g_efd_mu);
+            return local ? lo_error(SK_EBADF) : sk_fail();
+        }
         want[k][fd >> 6] |= 1ull << (fd & 63); any = 1;
     }
     pthread_mutex_unlock(&g_efd_mu);
-    int64_t ms = tv ? tv[0] * 1000 + tv[1] / 1000 : -1;
+    int64_t ms = -1;
+    if (tv) ms = local && tv[0] > INT_MAX / 1000 ? INT_MAX : tv[0] * 1000 + (tv[1] + local * 999) / 1000;
+    if (local && ms > INT_MAX) ms = INT_MAX;
     if (!any) return sk_idle(ms);
-    sk_pollfd p[(EFD_MAX + DM_COOP_FD_MAX) * 3]; unsigned char from[sizeof p / sizeof *p];
+    sk_pollfd p[(EFD_MAX + DM_COOP_FD_MAX + LO_MAX) * 3]; unsigned char from[sizeof p / sizeof *p];
     int np = 0, ev[3] = {SK_POLLIN, SK_POLLOUT, 0};
-    for (int k = 0; k < 3; k++) for (int fd = 0; fd < nfds; fd++) if (want[k][fd >> 6] >> (fd & 63) & 1 && np < (EFD_MAX + DM_COOP_FD_MAX) * 3) {
-        from[np] = (unsigned char)k; p[np++] = (sk_pollfd){fd, (int16_t)ev[k], 0};
+    for (int k = 0; k < 3; k++) for (int fd = 0; fd < nfds; fd++) if (want[k][fd >> 6] >> (fd & 63) & 1 && np < (EFD_MAX + DM_COOP_FD_MAX + LO_MAX) * 3) {
+        int events = ev[k];
+        if (local && fd >= LO_BASE && fd < LO_BASE + LO_MAX)
+            events = k == 2 ? LO_POLLPRI : ev[k];
+        from[np] = (unsigned char)k; p[np++] = (sk_pollfd){fd, (int16_t)events, 0};
     }
-    int got = dm_sk_poll(p, (uint64_t)np, (int)ms);
+    int got = local ? sk_mixed_poll(cn, p, (uint64_t)np, (int)ms, 1, 1) : dm_sk_poll(p, (uint64_t)np, (int)ms);
     if (got < 0) return got;
     // A virtual socket can close after validation. Select reports EBADF, not
     // Poll's POLLNVAL; leave all caller sets untouched on this error.
@@ -207,23 +229,23 @@ int dm_sk_select(int nfds, const uint64_t *r, const uint64_t *w, const uint64_t 
     for (int i = 0; i < np; i++) if (p[i].revents) { int k = from[i]; sets[k][p[i].fd >> 6] |= 1ull << (p[i].fd & 63); }
     return got;
 }
-SKF("_ZN2nn6socket6SocketENS0_6FamilyENS0_4TypeENS0_8ProtocolE", h_sk_Socket, int a, int b, int c) { coop_node *cn = dm_coop_node(); if (cn) return dm_coop_ret(coop_vnet_socket(cn, a, b, c)); return sk_fail(); }
-SKF("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", h_sk_Bind, int s, const void *a, unsigned n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_bind(dm_coop_node(), s, a, n)); return sk_fail(); }
-SKF("_ZN2nn6socket7ConnectEiPKNS0_8SockAddrEj", h_sk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket6ListenEii", h_sk_Listen, int s, int n) { (void)s; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket6AcceptEiPNS0_8SockAddrEPj", h_sk_Accept, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket5CloseEi", h_sk_Close, int s) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_close(dm_coop_node(), s)); return efd_close(s) ? 0 : sk_fail(); }
-SKF("_ZN2nn6socket11GetPeerNameEiPNS0_8SockAddrEPj", h_sk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket11GetSockNameEiPNS0_8SockAddrEPj", h_sk_GetSockName, int s, void *a, unsigned *n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_getsockname(dm_coop_node(), s, a, n)); return sk_fail(); }
-SKF("_ZN2nn6socket10GetSockOptEiNS0_5LevelENS0_6OptionEPvPj", h_sk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_getsockopt(dm_coop_node(), s, l, o, v, n)); return sk_fail(); }
-SKF("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", h_sk_SetSockOpt, int s, int l, int o, const void *v, unsigned n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_setsockopt(dm_coop_node(), s, l, o, v, n)); return sk_fail(); }
-SKF("_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", h_sk_Fcntl, int s, int c, long a) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_fcntl(dm_coop_node(), s, c, (int)a)); int r; return efd_fcntl(s, c, a, &r) ? r : sk_fail(); }
+SKF("_ZN2nn6socket6SocketENS0_6FamilyENS0_4TypeENS0_8ProtocolE", h_sk_Socket, int a, int b, int c) { if (dm_lo_enabled()) return dm_lo_socket(a, b, c); coop_node *cn = dm_coop_node(); if (cn) return dm_coop_ret(coop_vnet_socket(cn, a, b, c)); return sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket4BindEiPKNS0_8SockAddrEj", h_sk_Bind, int s, const void *a, unsigned n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_bind(dm_coop_node(), s, a, n)); return dm_lo_enabled() ? dm_lo_bind(s, a, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket7ConnectEiPKNS0_8SockAddrEj", h_sk_Connect, int s, const void *a, unsigned n) { return dm_lo_enabled() ? dm_lo_connect(s, a, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket6ListenEii", h_sk_Listen, int s, int n) { return dm_lo_enabled() ? dm_lo_listen(s, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket6AcceptEiPNS0_8SockAddrEPj", h_sk_Accept, int s, void *a, unsigned *n) { return dm_lo_enabled() ? dm_lo_accept(s, a, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket5CloseEi", h_sk_Close, int s) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_close(dm_coop_node(), s)); return efd_close(s) ? 0 : dm_lo_enabled() ? dm_lo_close(s) : sk_fail() /* PEANUTS(upstream-candidate) */; }
+SKF("_ZN2nn6socket11GetPeerNameEiPNS0_8SockAddrEPj", h_sk_GetPeerName, int s, void *a, unsigned *n) { return dm_lo_enabled() ? dm_lo_name(s, a, n, 1) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket11GetSockNameEiPNS0_8SockAddrEPj", h_sk_GetSockName, int s, void *a, unsigned *n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_getsockname(dm_coop_node(), s, a, n)); return dm_lo_enabled() ? dm_lo_name(s, a, n, 0) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket10GetSockOptEiNS0_5LevelENS0_6OptionEPvPj", h_sk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_getsockopt(dm_coop_node(), s, l, o, v, n)); return dm_lo_enabled() ? dm_lo_getopt(s, l, o, v, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket10SetSockOptEiNS0_5LevelENS0_6OptionEPKvj", h_sk_SetSockOpt, int s, int l, int o, const void *v, unsigned n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_setsockopt(dm_coop_node(), s, l, o, v, n)); return dm_lo_enabled() ? dm_lo_setopt(s, l, o, v, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket5FcntlEiNS0_12FcntlCommandEz", h_sk_Fcntl, int s, int c, long a) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_fcntl(dm_coop_node(), s, c, (int)a)); int r; return efd_fcntl(s, c, a, &r) ? r : dm_lo_enabled() ? dm_lo_fcntl(s, c, a) : sk_fail() /* PEANUTS(upstream-candidate) */; }
 // SDK 21 overloads Star Fox imports: plain sockaddr, the ShutdownMethod enum, Read / Write and a name lookup without options; SetAllocator keeps nothing, as no session is created
-SKF("_ZN2nn6socket11GetPeerNameEiP8sockaddrPj", h_sk_GetPeerName21, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
-SKF("_ZN2nn6socket8ShutdownEiNS0_14ShutdownMethodE", h_sk_Shutdown21, int s, int how) { (void)how; if (dm_coop_vfd(s)) return 0; return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket4ReadEiPvm", "bsd socket service (cut)", long, h_sk_Read, int s, void *b, unsigned long n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, 0, NULL, NULL)); return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket5WriteEiPKvm", "bsd socket service (cut)", long, h_sk_Write, int s, const void *b, unsigned long n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, 0, NULL, 0)); return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket16GetHostEntByNameEPKc", "name resolution (cut): NULL", void *, h_sk_GetHostEnt21, const char *n) { (void)n; t_skerr = SK_ENETDOWN; return NULL; }
+SKF("_ZN2nn6socket11GetPeerNameEiP8sockaddrPj", h_sk_GetPeerName21, int s, void *a, unsigned *n) { return dm_lo_enabled() ? dm_lo_name(s, a, n, 1) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+SKF("_ZN2nn6socket8ShutdownEiNS0_14ShutdownMethodE", h_sk_Shutdown21, int s, int how) { if (dm_coop_vfd(s)) return 0; return dm_lo_enabled() ? dm_lo_shutdown(s, how) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket4ReadEiPvm", "bsd socket service (cut)", long, h_sk_Read, int s, void *b, unsigned long n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, 0, NULL, NULL)); return dm_lo_enabled() ? dm_lo_recv(s, b, n, 0, NULL, NULL) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket5WriteEiPKvm", "bsd socket service (cut)", long, h_sk_Write, int s, const void *b, unsigned long n) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, 0, NULL, 0)); return dm_lo_enabled() ? dm_lo_send(s, b, n, 0, NULL, 0) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket16GetHostEntByNameEPKc", "name resolution (cut): NULL", void *, h_sk_GetHostEnt21, const char *n) { if (dm_lo_enabled()) return dm_lo_host(n); /* PEANUTS(upstream-candidate) */ t_skerr = SK_ENETDOWN; return NULL; }
 HLE_FORCE("_ZN2nn6socket12SetAllocatorEPNS_14MemoryResourceE", "socket library allocator; no session is created, ignored", void, h_sk_SetAlloc, void *r) { (void)r; }
 SKF("_ZN2nn6socket4PollEPNS0_6PollFdEmi", h_sk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
 // The C library's poll (SDK 21's nnmusl, Star Fox): it needs the socket state of the initialization cut above and fails with EFAULT without it, which the game's loop takes as fatal, so it goes
@@ -232,21 +254,21 @@ SKF("poll", h_libc_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f,
 SKF("_ZN2nn6socket6SelectEiPNS0_5FdSetES2_S2_PNS0_7TimeValE", h_sk_Select, int n, void *r, void *w, void *e, void *t) { return dm_sk_select(n, r, w, e, t); }
 SKF("_ZN2nn6socket17ResolverGetOptionEPNS0_14ResolverOptionENS0_17ResolverOptionKeyE", h_sk_ResGet, void *o, int k) { (void)o; (void)k; return sk_fail(); }
 SKF("_ZN2nn6socket17ResolverSetOptionERKNS0_14ResolverOptionE", h_sk_ResSet, const void *o) { (void)o; return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket4RecvEiPvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Recv, int s, void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, NULL, NULL)); return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket8RecvFromEiPvmNS0_7MsgFlagEPNS0_8SockAddrEPj", "bsd socket service (cut)", long, h_sk_RecvFrom, int s, void *b, unsigned long n, int f, void *a, unsigned *al) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, a, al)); return sk_fail(); }
-HLE_FORCE("_ZN2nn6socket4SendEiPKvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Send, int s, const void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, f, NULL, 0)); return sk_fail(); }
+HLE_FORCE("_ZN2nn6socket4RecvEiPvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Recv, int s, void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, NULL, NULL)); return dm_lo_enabled() ? dm_lo_recv(s, b, n, f, NULL, NULL) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket8RecvFromEiPvmNS0_7MsgFlagEPNS0_8SockAddrEPj", "bsd socket service (cut)", long, h_sk_RecvFrom, int s, void *b, unsigned long n, int f, void *a, unsigned *al) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, a, al)); return dm_lo_enabled() ? dm_lo_recv(s, b, n, f, a, al) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket4SendEiPKvmNS0_7MsgFlagE", "bsd socket service (cut)", long, h_sk_Send, int s, const void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, f, NULL, 0)); return dm_lo_enabled() ? dm_lo_send(s, b, n, f, NULL, 0) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
 HLE_FORCE("_ZN2nn6socket11GetAddrInfoEPKcS2_PKNS0_8AddrInfoEPPS3_", "name resolution (cut): EAI_FAIL", int, h_sk_GetAddrInfo, const char *h, const char *s, const void *hint, void **res) {
-    (void)h; (void)s; (void)hint; if (res) *res = NULL; return 4;   // EAI_FAIL
+    return dm_lo_gai(h, s, hint, res, 1); // PEANUTS(upstream-candidate)
 }
-HLE_FORCE("_ZN2nn6socket12FreeAddrInfoEPNS0_8AddrInfoE", "pairs with GetAddrInfo (cut)", void, h_sk_FreeAddrInfo, void *ai) { (void)ai; }
-HLE_FORCE("_ZN2nn6socket16GetHostEntByNameEPKcPKNS0_14ResolverOptionEm", "name resolution (cut): NULL", void *, h_sk_GetHostEnt, const char *n, const void *o, unsigned long c) { (void)n; (void)o; (void)c; t_skerr = SK_ENETDOWN; return NULL; }
+HLE_FORCE("_ZN2nn6socket12FreeAddrInfoEPNS0_8AddrInfoE", "pairs with GetAddrInfo (cut)", void, h_sk_FreeAddrInfo, void *ai) { if (dm_lo_enabled()) free(ai); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("_ZN2nn6socket16GetHostEntByNameEPKcPKNS0_14ResolverOptionEm", "name resolution (cut): NULL", void *, h_sk_GetHostEnt, const char *n, const void *o, unsigned long c) { (void)o; (void)c; if (dm_lo_enabled()) return dm_lo_host(n); /* PEANUTS(upstream-candidate) */ t_skerr = SK_ENETDOWN; return NULL; }
 HLE_FORCE("_ZN2nn6socket12GetLastErrorEv", "socket error code kept by the host", int, h_sk_GetLastError, void) { return t_skerr; }
 // C interface
 SKF("nnsocketSocket", h_nsk_Socket, int a, int b, int c) { return h_sk_Socket(a, b, c); }
 SKF("nnsocketBind", h_nsk_Bind, int s, const void *a, unsigned n) { return h_sk_Bind(s, a, n); }
-SKF("nnsocketConnect", h_nsk_Connect, int s, const void *a, unsigned n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKF("nnsocketConnect", h_nsk_Connect, int s, const void *a, unsigned n) { return dm_lo_enabled() ? dm_lo_connect(s, a, n) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
 SKF("nnsocketClose", h_nsk_Close, int s) { return h_sk_Close(s); }
-SKF("nnsocketGetPeerName", h_nsk_GetPeerName, int s, void *a, unsigned *n) { (void)s; (void)a; (void)n; return sk_fail(); }
+SKF("nnsocketGetPeerName", h_nsk_GetPeerName, int s, void *a, unsigned *n) { return dm_lo_enabled() ? dm_lo_name(s, a, n, 1) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
 SKF("nnsocketGetSockName", h_nsk_GetSockName, int s, void *a, unsigned *n) { return h_sk_GetSockName(s, a, n); }
 SKF("nnsocketGetSockOpt", h_nsk_GetSockOpt, int s, int l, int o, void *v, unsigned *n) { return h_sk_GetSockOpt(s, l, o, v, n); }
 SKF("nnsocketSetSockOpt", h_nsk_SetSockOpt, int s, int l, int o, const void *v, unsigned n) { return h_sk_SetSockOpt(s, l, o, v, n); }
@@ -254,11 +276,51 @@ SKF("nnsocketFcntl", h_nsk_Fcntl, int s, int c, long a) { return h_sk_Fcntl(s, c
 SKF("nnsocketPoll", h_nsk_Poll, void *f, unsigned long n, int t) { return dm_sk_poll(f, n, t); }
 SKF("nnsocketResolverGetOption", h_nsk_ResGet, void *o, int k) { (void)o; (void)k; return sk_fail(); }
 SKF("nnsocketResolverSetOption", h_nsk_ResSet, const void *o) { (void)o; return sk_fail(); }
-HLE_FORCE("nnsocketRecv", "bsd socket service (cut)", long, h_nsk_Recv, int s, void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, NULL, NULL)); return sk_fail(); }
-HLE_FORCE("nnsocketSend", "bsd socket service (cut)", long, h_nsk_Send, int s, const void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, f, NULL, 0)); return sk_fail(); }
-HLE_FORCE("nnsocketGetHostByNameWithOptions", "name resolution (cut): NULL", void *, h_nsk_GetHost, const char *n, const void *o, unsigned long c) { (void)n; (void)o; (void)c; t_skerr = SK_ENETDOWN; return NULL; }
+HLE_FORCE("nnsocketRecv", "bsd socket service (cut)", long, h_nsk_Recv, int s, void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_recvfrom(dm_coop_node(), s, b, n, f, NULL, NULL)); return dm_lo_enabled() ? dm_lo_recv(s, b, n, f, NULL, NULL) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("nnsocketSend", "bsd socket service (cut)", long, h_nsk_Send, int s, const void *b, unsigned long n, int f) { if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, f, NULL, 0)); return dm_lo_enabled() ? dm_lo_send(s, b, n, f, NULL, 0) : sk_fail(); /* PEANUTS(upstream-candidate) */ }
+HLE_FORCE("nnsocketGetHostByNameWithOptions", "name resolution (cut): NULL", void *, h_nsk_GetHost, const char *n, const void *o, unsigned long c) { (void)o; (void)c; if (dm_lo_enabled()) return dm_lo_host(n); /* PEANUTS(upstream-candidate) */ t_skerr = SK_ENETDOWN; return NULL; }
 HLE_FORCE("nnsocketGetLastErrno", "socket error code kept by the host", int, h_nsk_GetErrno, void) { return t_skerr; }
 HLE_FORCE("nnsocketSetLastErrno", "socket error code kept by the host", void, h_nsk_SetErrno, int e) { t_skerr = e; }
+
+// PEANUTS(upstream-candidate) begin: SDK socket entry points used by local clients and servers.
+HLE_FORCE_IF("_ZN2nn6socket13GetHostByNameEPKc", "local hostname lookup", dm_lo_enabled, void *, h_sk_GetHostByName, const char *n) {
+    if (dm_lo_enabled()) return dm_lo_host(n);
+    sk_fail();
+    return NULL;
+}
+HLE_FORCE_IF("nnsocketGetHostByName", "local hostname lookup", dm_lo_enabled, void *, h_nsk_GetHostByName, const char *n) {
+    return h_sk_GetHostByName(n);
+}
+HLE_FORCE_IF("nnsocketSelect", "local socket select", dm_lo_enabled, int, h_nsk_Select, int n, void *r, void *w, void *e, void *t) { return dm_sk_select(n, r, w, e, t); }
+HLE_FORCE_IF("nnsocketSendTo", "local socket send", dm_lo_enabled, long, h_nsk_SendTo, int s, const void *b, unsigned long n, int f, const void *a, unsigned al) {
+    if (dm_coop_vfd(s)) return dm_coop_ret(coop_vnet_sendto(dm_coop_node(), s, b, n, f, a, al));
+    return dm_lo_enabled() ? dm_lo_send(s, b, n, f, a, al) : sk_fail();
+}
+HLE_FORCE_IF("nnsocketRecvFrom", "local socket receive", dm_lo_enabled, long, h_nsk_RecvFrom, int s, void *b, unsigned long n, int f, void *a, unsigned *al) {
+    return h_sk_RecvFrom(s, b, n, f, a, al);
+}
+HLE_FORCE_IF("_ZN2nn6socket13GetHostByNameEPKcPKNS0_14ResolverOptionEm", "local hostname lookup", dm_lo_enabled,
+             void *, h_sk_GetHostByNameOptions, const char *n, const void *opts, unsigned long count) {
+    (void)opts; (void)count;
+    return h_sk_GetHostByName(n);
+}
+HLE_FORCE_IF("_ZN2nn6socket11GetAddrInfoEPKcS2_PKNS0_8AddrInfoEPPS3_PKNS0_14ResolverOptionEm", "local address lookup", dm_lo_enabled,
+             int, h_sk_GetAddrInfoOptions, const char *h, const char *s, const void *hint, void **res, const void *opts, unsigned long count) {
+    (void)opts; (void)count;
+    return dm_lo_gai(h, s, hint, res, 1);
+}
+HLE_FORCE_IF("_ZN2nn6socket11GetAddrInfoEPKcS2_PK8addrinfoPPS3_PKNS0_14ResolverOptionEm", "local address lookup", dm_lo_enabled,
+             int, h_sk_GetAddrInfoPlainOptions, const char *h, const char *s, const void *hint, void **res, const void *opts, unsigned long count) {
+    (void)opts; (void)count;
+    return dm_lo_gai(h, s, hint, res, 0);
+}
+HLE_FORCE_IF("_ZN2nn6socket12SetLastErrnoEi", "set the local socket error", dm_lo_enabled, void, h_sk_SetLastErrno, int err) {
+    dm_sk_seterr(err);
+}
+HLE_FORCE_IF("_ZN2nn6socket12SetLastErrorENS0_5ErrnoE", "set the local socket error", dm_lo_enabled, void, h_sk_SetLastError, int err) {
+    dm_sk_seterr(err);
+}
+// PEANUTS(upstream-candidate) end
 
 // ---------- ssl: offline, Initialize and a context's Create / Destroy succeed, everything else that contacts the service fails ----------
 // A context is a session of the local ssl service, so on Horizon Create works with no network and only a connection needs one; DRAGON QUEST BUILDERS 2 ends its startup when Create fails (main+0x861260).

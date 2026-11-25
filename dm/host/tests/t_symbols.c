@@ -58,6 +58,8 @@ static void expect_abort(int duplicate) {
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
+static int force_disabled(void) { return 0; } // PEANUTS(upstream-candidate)
+
 int main(void) {
     // Empty/missing sections must still give misses after lazy initialization.
     assert(!hle_implements("absent")); assert(!hle_implements("absent"));
@@ -74,7 +76,7 @@ int main(void) {
     entries[1] = (hle_ent){names[1], &values[1]};
     entries[2] = (hle_ent){names[1], &values[2]};
     entries[3] = (hle_ent){names[2], &values[3]};
-    for (unsigned i = 0; i < 3; i++) forces[i] = (hle_force_ent){names[i], &values[i], "test"};
+    for (unsigned i = 0; i < 3; i++) forces[i] = (hle_force_ent){names[i], &values[i], "test", NULL};
     have_sections = 1; force_init();
     for (unsigned i = 0; i < 3; i++) {
         unsigned before = wraps;
@@ -89,6 +91,13 @@ int main(void) {
     assert(!hle_implements("absent") && !force_lookup("absent") && !g_nstub);
     assert(force_lookup(names[0]) == &values[0] && g_force_hits[0] == 2);
     expect_abort(1);
+
+    // PEANUTS(upstream-candidate): disabled hooks leave normal resolution intact.
+    reset_sections();
+    forces[0].enabled = force_disabled;
+    force_init();
+    assert(!force_lookup(names[0]) && hle_implements(names[0]));
+    assert(force_lookup(names[1]) == &values[1]);
 
     // Fill through every growth boundary, then query in reverse using different pointers to the same names.
     static char missing[MAX_STUB][32];

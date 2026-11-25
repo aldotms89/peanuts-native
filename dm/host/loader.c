@@ -203,11 +203,13 @@ static void force_init(void) {
     g_force_hits = calloc(g_nforce + 1, sizeof *g_force_hits);
     unsigned cap = 16; while (cap < g_nforce * 2) cap <<= 1;
     g_fidx = calloc(cap, sizeof *g_fidx); g_fmask = cap - 1;
-    for (unsigned i = 0; i < g_nforce; i++)   // insertion doubles as the duplicate check (a wrong list must still fail loudly, at once)
+    for (unsigned i = 0; i < g_nforce; i++) { // insertion doubles as the duplicate check (a wrong list must still fail loudly, at once)
+        if (g_force[i].enabled && !g_force[i].enabled()) continue; // PEANUTS(upstream-candidate)
         for (unsigned j = sym_hash(g_force[i].name) & g_fmask;; j = (j + 1) & g_fmask) {
             if (!g_fidx[j]) { g_fidx[j] = i + 1; break; }
             if (!strcmp(g_force[g_fidx[j] - 1].name, g_force[i].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
         }
+    }
 }
 static void *force_lookup(const char *name) {
     if (!g_fmask) return NULL;
@@ -222,11 +224,14 @@ static void *force_lookup(const char *name) {
 }
 // Generic host: the list serves several games, so entries a game does not reference are only noted; with DM_FORCE_STRICT=1 it still fails loudly (for checking a mistyped list)
 static void force_check(void) {
-    unsigned unused = 0; int strict = getenv("DM_FORCE_STRICT") != NULL;
-    for (unsigned i = 0; i < g_nforce; i++)
+    unsigned unused = 0, enabled = 0; int strict = getenv("DM_FORCE_STRICT") != NULL;
+    for (unsigned i = 0; i < g_nforce; i++) {
+        if (g_force[i].enabled && !g_force[i].enabled()) continue; // PEANUTS(upstream-candidate)
+        enabled++;
         if (!g_force_hits[i]) { if (strict || g_flag.imports) LOG("forced takeover entry with no reference at all: %s", g_force[i].name); unused++; }
+    }
     if (unused && strict) die("forced takeover list is wrong");
-    LOG("force: %u entries hit, %u not referenced by this game", g_nforce - unused, unused);
+    LOG("force: %u entries hit, %u not referenced by this game", enabled - unused, unused);
 }
 
 // Read the rewriter table header (segment boundaries, slot numbers); any row beyond the header means an old-format build output (code modified at load time), which is rejected
