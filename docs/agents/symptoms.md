@@ -4,6 +4,7 @@ One line per symptom in the [subsystem references](../reference/): what you see 
 
 ## Packing
 
+- `pack_android.py` reuses the cached Android shader library after a split package gains GLSLC captures. → [The desktop packer reuses shaders after the split gains captures](../reference/packing.md#the-desktop-packer-reuses-shaders-after-the-split-gains-captures)
 - the shader translator (a standalone .NET apphost) stops with exit code 131 and `.NET location: Not found`, even though `dotnet` is on `PATH`. → [Homebrew .NET is on PATH but apphosts cannot find the runtime](../reference/packing.md#homebrew-net-is-on-path-but-apphosts-cannot-find-the-runtime)
 - `make -C dm/host` stops at `hle_movie_av1.c: fatal error: 'dav1d/dav1d.h' file not found`, then, with that fixed, at `Undefined symbols: "_vka_env_gen", referenced from: _probe_install in probe.o`. → [The Mac host does not link: dav1d, and a weak reference to the Vulkan replay](../reference/packing.md#the-mac-host-does-not-link-dav1d-and-a-weak-reference-to-the-vulkan-replay)
 - the NSP script's heap check of a game whose heap is larger than the block leaves beside its alias region writes a `mem_reserve` whose heap region is still too small (Super Mario Bros. Wonder's program 1: `0x1a0000000` for a 4.94 GB heap beside a 4.375 GB alias region, a 1.6 GB heap region), and the address region check's boot then stops at `SetHeapSize OOM` and a crash in `nninitStartup`. → [The heap check sized the block for a 1 GB alias region](../reference/packing.md#the-heap-check-sized-the-block-for-a-1-gb-alias-region)

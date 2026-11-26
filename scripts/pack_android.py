@@ -18,7 +18,7 @@
 # named `<name>.nup:update/<version>/...` (or `:base/...`), the DLC `<name>.nup:addon/<title ID>/romfs`, and pack.tsv's paths are relative to the folder holding the file.
 # Writes <game folder>/../<title ID>-work/android-pack/ unless --out names another folder. A repeat run keeps modules whose inputs are unchanged.
 # Needs Python with Capstone 5 and lz4 (pyproject.toml, dependency group android-pack). Packs are for the user's own phone: never commit or share one.
-# The shader library: <work>/android-shaders/lib/v-<V>/ is reused when its inputs.tsv names this game and its profile's current inputs (a full build writes it last);
+# The shader library: <work>/android-shaders/lib/v-<V>/ is reused when its inputs.tsv matches the game and profile and, when a split exists, package.stamp matches it;
 # otherwise it is built there from <work>/android-shaders/pkg (shader_split.py's output, as dmsh_build.py takes) by vk_android_build.py, which needs Python 3.14 (or
 # backports.zstd), the .NET 10 runtime and spirv-val: --shader-python names that Python (default: the first of python3.14 / python3 on PATH that has zstd). About 10 minutes
 # on DKB with -J 12. Without a package (the default folder or --shader-pkg) the dump is split into it first (split_shaders), and the split must hold every shader of the
@@ -848,10 +848,41 @@ def lib_stamp(lib_dir):
     return {'game': h[40:56].rstrip(b'\0').decode(errors='replace'), 'inputs': h[56:72].rstrip(b'\0').decode(errors='replace')} if len(h) == 72 else {}
 
 
-def library_current(lib_dir, g):
-    """True when lib_dir holds a finished full library of this game and its profile's current inputs"""
+PACKAGE_STAMP = 'package.stamp'
+
+
+def shader_package_digest(pkg):
+    """Fingerprint the split's tables and records without reading the shader blobs."""
+    h = hashlib.sha256()
+    for path in (pkg.parent / 'shader_map.tsv', pkg.parent / 'pso_pairs.tsv',
+                 pkg / 'selected.txt', pkg / '_absent.tsv'):
+        if path.is_file():
+            h.update(path.name.encode() + b'\0' + hashlib.sha256(path.read_bytes()).digest())
+    # An explicit split can have no adjacent map. Stat the blobs to catch
+    # appended captures and replacements even when the map was left behind.
+    for path in sorted(pkg.glob('*.bin')):
+        st = path.stat()
+        h.update(f'{path.name}\0{st.st_size}\t{st.st_mtime_ns}\n'.encode())
+    return h.hexdigest()
+
+
+def package_stamp(lib_dir, digest):
+    # Bind the cache stamp to this library, which another build can replace.
+    st = (lib_dir / VK_LIB).stat()
+    return f'{digest}\t{st.st_size}\t{st.st_mtime_ns}\n'
+
+
+def library_current(lib_dir, g, package_digest=None):
+    """Check profile compatibility and, when selected, the cached split package."""
     st = lib_stamp(lib_dir)
-    return (lib_dir / VK_LIB).is_file() and st.get('game') == g.id and st.get('inputs') == dmsh_chain.inputs(g)
+    if not ((lib_dir / VK_LIB).is_file() and st.get('game') == g.id and st.get('inputs') == dmsh_chain.inputs(g)):
+        return False
+    if package_digest is None:
+        return True
+    try:
+        return (lib_dir / PACKAGE_STAMP).read_text(encoding='utf-8') == package_stamp(lib_dir, package_digest)
+    except FileNotFoundError:
+        return False
 
 
 def map_keys(path):
@@ -1027,10 +1058,13 @@ def pack_shaders(a, g, work, out, vdir, parts=None, aoc=()):
     cache = (a.shader_cache or work / 'android-shaders' / 'lib').resolve(); lib = cache / name
     dst = out / 'shaders' / name
     stage('checking the saved shaders')  # PEANUTS: build text in the player's words (0.1.8)
-    if not library_current(lib, g):
+    pkg = (a.shader_pkg or work / 'android-shaders' / 'pkg').resolve()
+    digest = shader_package_digest(pkg) if pkg.is_dir() else None
+    if not library_current(lib, g, digest):
         if a.in_process: raise Error(f'no current shader library {lib}: --in-process does not build one yet (vk_android_build.py starts the translator and spirv-val as programs); --no-shaders packs without')
-        pkg = (a.shader_pkg or work / 'android-shaders' / 'pkg').resolve()
-        if not pkg.is_dir(): split_shaders(a, g, vdir, pkg, parts, aoc, collected_nros(work))   # also into a --shader-pkg folder that is not there yet
+        if digest is None:
+            split_shaders(a, g, vdir, pkg, parts, aoc, collected_nros(work))   # also into a --shader-pkg folder that is not there yet
+            digest = shader_package_digest(pkg)
         py = shader_python(a.shader_python)
         print(f'shaders: building the Vulkan library {lib} from {pkg} with {py} (J={a.J}; about 10 minutes on DKB)', flush=True)
         swork = shader_work(a, work); swork.mkdir(parents=True, exist_ok=True)   # PEANUTS(upstream-candidate): beside a --shader-cache folder (shader_work)
@@ -1055,9 +1089,16 @@ def pack_shaders(a, g, work, out, vdir, parts=None, aoc=()):
                 if WINDOWS:
                     kf = Path(selection_dir) / 'keys.txt'; write_lf(kf, ''.join(k + '\n' for k in keys)); args = ['@' + str(kf)]   # PEANUTS: private to this child; removed after it exits
                 else: args = keys
+            (lib / PACKAGE_STAMP).unlink(missing_ok=True)
             r = subprocess.run([py, str(VK_BUILD_WIN if WINDOWS or sys.platform.startswith('linux') else VK_BUILD), '--target', 'vulkan', str(pkg), str(cache), *args], env=env)   # PEANUTS: on Linux too, for the translator's start (the repository's apphost is the Mac's; vk_android_win.py starts the dlls with dotnet)
         if r.returncode: raise Error(f'vk_android_build.py exit code {r.returncode} (a package that lacks the profile\'s shaders stops it: delete {pkg} and the split runs again)')
         if not library_current(lib, g): raise Error(f'vk_android_build.py finished but {lib} is not a full library of {g.id} with the current inputs')
+        if shader_package_digest(pkg) != digest:
+            raise Error(f'shader package {pkg} changed during the library build')
+        with tempfile.TemporaryDirectory(dir=lib) as stamp_dir:
+            tmp_stamp = Path(stamp_dir) / PACKAGE_STAMP
+            write_lf(tmp_stamp, package_stamp(lib, digest))
+            tmp_stamp.replace(lib / PACKAGE_STAMP)
     else: print(f'shaders: {lib} is current (game {g.id}, inputs {dmsh_chain.inputs(g)})')
     dst.mkdir(parents=True, exist_ok=True)
     if not (lib / dmsh_chain.STAMP).is_file():   # a library copied without its stamp: written from its header (library_current took it from there)

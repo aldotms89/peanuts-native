@@ -16,6 +16,56 @@ pack_android = importlib.import_module('pack_android')
 
 
 class ShaderWork(unittest.TestCase):
+    def test_package_changes_rebuild_the_cached_library(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            pkg = root / 'pkg'
+            pkg.mkdir()
+            shader_map = root / 'shader_map.tsv'
+            original = 'ps.bin\t0\tps\t0123456789abcdef\t/base\n'
+            shader_map.write_text(original)
+            profile_dir = root / 'profile'
+            profile = argparse.Namespace(id='040074A01BF12000', rows=[], dir=profile_dir, table=profile_dir.joinpath)
+            cache = root / 'cache'
+            lib = cache / (pack_android.VK_PREFIX + 'test')
+            args = argparse.Namespace(shader_cache=cache, shader_pkg=pkg, shader_python=None, in_process=False, J=1)
+
+            def build(*_args, **_kwargs):
+                lib.mkdir(parents=True, exist_ok=True)
+                (lib / pack_android.VK_LIB).write_bytes(b'library')
+                pack_android.dmsh_chain.write_stamp(lib, profile.id, pack_android.dmsh_chain.inputs(profile))
+                return argparse.Namespace(returncode=0)
+
+            original_digest = pack_android.shader_package_digest(pkg)
+            self.assertEqual(original_digest, pack_android.shader_package_digest(pkg))
+            build()
+            with patch.multiple(pack_android, require_shaders=lambda g: None, vk_chain=lambda: 'test',
+                                peanuts_env=lambda *a: {},
+                                shader_python=lambda *a: sys.executable, windows_shader_workers=lambda *a: {}):
+                with patch.object(pack_android.subprocess, 'run', side_effect=build) as child:
+                    pack = pack_android.pack_shaders(args, profile, root, root / 'out', root)
+                    pack_android.pack_shaders(args, profile, root, root / 'out', root)
+                    self.assertEqual(child.call_count, 1)
+                    shader_map.write_text(original + 'ps.bin\t1\tps\tfedcba9876543210\t/glslc_capture/new.glslc\n')
+                    self.assertNotEqual(original_digest, pack_android.shader_package_digest(pkg))
+                    pack_android.pack_shaders(args, profile, root, root / 'out', root)
+                    self.assertEqual(child.call_count, 2)
+                    self.assertTrue(pack_android.library_current(pack.parent, profile))
+                    self.assertFalse((pack.parent / pack_android.PACKAGE_STAMP).exists())
+                    pkg.rename(root / 'saved-pkg')
+                    pack_android.pack_shaders(args, profile, root, root / 'out', root)
+                    self.assertEqual(child.call_count, 2)
+
+    def test_package_without_map_detects_added_record(self):
+        with tempfile.TemporaryDirectory() as d:
+            pkg = Path(d)
+            blob = pkg / 'ps.bin'
+            blob.write_bytes(b'original record')
+            digest = pack_android.shader_package_digest(pkg)
+            with blob.open('ab') as f:
+                f.write(b'captured record')
+            self.assertNotEqual(digest, pack_android.shader_package_digest(pkg))
+
     def test_default_is_where_it_was(self):
         work = Path('/games/Game/0100000000010000-work')
         self.assertEqual(pack_android.shader_work(argparse.Namespace(shader_cache=None), work), work / 'android-shaders' / 'work')

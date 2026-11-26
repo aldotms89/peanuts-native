@@ -2,6 +2,13 @@
 
 ## Build tools
 
+### The desktop packer reuses shaders after the split gains captures
+
+- **Symptom:** `pack_android.py` reuses the cached Android shader library after a split package gains GLSLC captures.
+- **Cause:** The library's `inputs.tsv` and header identify the game and its profile inputs. The cache also needs to know which split produced the library.
+- **Fix:** The desktop packer writes `package.stamp` in its library cache after a successful build. It tracks the split's shader map, PSO pairs, selection and absent-key lists when present, plus the package binaries' sizes and modification times. A cache without this stamp rebuilds once when a split is present. Without a split, the profile check still suffices. The launcher and on-device Prepare continue to use the profile digest in `inputs.tsv` or the library header.
+- **Found on:** Desktop packing with a split package ([issue #670](https://github.com/igawa6/peanuts-native/issues/670)).
+
 ### Homebrew .NET is on PATH but apphosts cannot find the runtime
 
 - **Symptom:** the shader translator (a standalone .NET apphost) stops with exit code 131 and `.NET location: Not found`, even though `dotnet` is on `PATH`.
