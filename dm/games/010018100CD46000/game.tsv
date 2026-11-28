@@ -1,0 +1,31 @@
+# PEANUTS: Resident Evil 5 Android profile for update 1.0.3.
+
+# ---- Identity ----
+title_id	010018100CD46000
+program_id	010018100CD46000
+
+# ---- App ----
+name	Resident Evil 5
+
+# ---- Versions ----
+build	v196608	1.0.3	main=4e46401bf2fe53a44b69cc07fd951fe6	subsdk0=b9c00c0216af9b5b7f958ddbd25271c8	sdk=b2872a7bcc589969fb7afb8e372414e4
+package	v196608
+shader_versions	v196608
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	nativeNXx64/movie/op_b.mp4
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/nativeNXx64/=nativenxx64
+shader_note	MT Framework NVN shaders from ARC v7 archives in update 1.0.3
